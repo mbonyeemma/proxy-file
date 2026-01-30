@@ -21,13 +21,16 @@ if (!BASE_URL) {
   process.exit(1);
 }
 
-const PORT = Number(process.env.PORT) || 3999;
+const PORT = Number(process.env.PORT) || 8080;
 
 const https = require("https");
 
 const server = http.createServer((req, res) => {
-  const path = req.url || "/";
-  const target = new URL(path, BASE_URL.replace(/\/$/, "") + "/");
+  const reqPath = req.url || "/";
+  const target = new URL(reqPath, BASE_URL.replace(/\/$/, "") + "/");
+  const targetUrl = target.href;
+
+  console.log(`[proxy] ${req.method} ${reqPath} → ${targetUrl}`);
 
   const opts = {
     hostname: target.hostname,
@@ -39,11 +42,13 @@ const server = http.createServer((req, res) => {
 
   const client = target.protocol === "https:" ? https : http;
   const proxyReq = client.request(opts, (proxyRes) => {
+    console.log(`[proxy] ${req.method} ${reqPath} ← ${proxyRes.statusCode}`);
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     proxyRes.pipe(res);
   });
 
   proxyReq.on("error", (err) => {
+    console.error(`[proxy] ${req.method} ${reqPath} ✗ ${err.message}`);
     res.writeHead(502, { "Content-Type": "text/plain" });
     res.end("Bad Gateway: " + err.message);
   });
