@@ -1,0 +1,12 @@
+{
+  "name": "proxy",
+  "version": "1.0.0",
+  "description": "Pass-through proxy",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
