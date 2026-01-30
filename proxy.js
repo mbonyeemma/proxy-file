@@ -37,7 +37,11 @@ function safeString(buf) {
 
 const server = http.createServer((req, res) => {
   const reqPath = req.url || "/";
-  const target = new URL(reqPath, BASE_URL.replace(/\/$/, "") + "/");
+  // Append request path to base path so /api/ is kept (new URL(path, base) would replace base path)
+  const base = new URL(BASE_URL.replace(/\/$/, "") + "/");
+  const basePath = base.pathname.replace(/\/$/, "");
+  const pathAndSearch = reqPath.startsWith("/") ? reqPath : "/" + reqPath;
+  const target = new URL(basePath + pathAndSearch, base.origin);
   const targetUrl = target.href;
 
   console.log(`[proxy] ${req.method} ${reqPath} → ${targetUrl}`);
