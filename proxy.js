@@ -25,6 +25,16 @@ const PORT = Number(process.env.PORT) || 8080;
 
 const https = require("https");
 
+const MAX_LOG_BODY = 10 * 1024; // 10KB max to log
+
+function safeString(buf) {
+  try {
+    return buf.length ? buf.toString("utf8") : "";
+  } catch {
+    return "<binary>";
+  }
+}
+
 const server = http.createServer((req, res) => {
   const reqPath = req.url || "/";
   const target = new URL(reqPath, BASE_URL.replace(/\/$/, "") + "/");
@@ -32,28 +42,70 @@ const server = http.createServer((req, res) => {
 
   console.log(`[proxy] ${req.method} ${reqPath} → ${targetUrl}`);
 
-  const opts = {
-    hostname: target.hostname,
-    port: target.port || (target.protocol === "https:" ? 443 : 80),
-    path: target.pathname + target.search,
-    method: req.method,
-    headers: { ...req.headers, host: target.host },
-  };
+  const chunks = [];
+  req.on("data", (chunk) => chunks.push(chunk));
+  req.on("end", () => {
+    const body = Buffer.concat(chunks);
+    const bodyStr = safeString(body);
+    console.log("[proxy] REQUEST headers:", JSON.stringify(req.headers, null, 2));
+    if (body.length) {
+      const toLog = body.length <= MAX_LOG_BODY ? bodyStr : bodyStr.slice(0, MAX_LOG_BODY) + "\n... (truncated)";
+      console.log("[proxy] REQUEST body:", toLog);
+    }
 
-  const client = target.protocol === "https:" ? https : http;
-  const proxyReq = client.request(opts, (proxyRes) => {
-    console.log(`[proxy] ${req.method} ${reqPath} ← ${proxyRes.statusCode}`);
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
-    proxyRes.pipe(res);
+    // Forward request headers as-is; only override host for upstream
+    const reqHeaders = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (v !== undefined) reqHeaders[k] = v;
+    }
+    reqHeaders.host = target.host;
+
+    const opts = {
+      hostname: target.hostname,
+      port: target.port || (target.protocol === "https:" ? 443 : 80),
+      path: target.pathname + target.search,
+      method: req.method,
+      headers: reqHeaders,
+    };
+
+    const client = target.protocol === "https:" ? https : http;
+    const proxyReq = client.request(opts, (proxyRes) => {
+      const resChunks = [];
+      proxyRes.on("data", (chunk) => resChunks.push(chunk));
+      proxyRes.on("end", () => {
+        const resBody = Buffer.concat(resChunks);
+        const resBodyStr = safeString(resBody);
+        const status = proxyRes.statusCode;
+        console.log(`[proxy] ${req.method} ${reqPath} ← ${status}`);
+
+        // Forward response headers as-is
+        const resHeaders = {};
+        for (const [k, v] of Object.entries(proxyRes.headers)) {
+          if (v !== undefined) resHeaders[k] = v;
+        }
+
+        const toLog = resBody.length <= MAX_LOG_BODY ? resBodyStr : resBodyStr.slice(0, MAX_LOG_BODY) + "\n... (truncated)";
+        if (status >= 400) {
+          console.error("[proxy] UPSTREAM ERROR " + status + " body: " + (toLog || "(empty)"));
+          console.error("[proxy] UPSTREAM ERROR " + status + " headers: " + JSON.stringify(resHeaders));
+        } else {
+          console.log("[proxy] RESPONSE body:", toLog || "(empty)");
+        }
+
+        res.writeHead(status, resHeaders);
+        res.end(resBody);
+      });
+    });
+
+    proxyReq.on("error", (err) => {
+      console.error(`[proxy] ${req.method} ${reqPath} ✗ ${err.message}`);
+      res.writeHead(502, { "Content-Type": "text/plain" });
+      res.end("Bad Gateway: " + err.message);
+    });
+
+    proxyReq.write(body);
+    proxyReq.end();
   });
-
-  proxyReq.on("error", (err) => {
-    console.error(`[proxy] ${req.method} ${reqPath} ✗ ${err.message}`);
-    res.writeHead(502, { "Content-Type": "text/plain" });
-    res.end("Bad Gateway: " + err.message);
-  });
-
-  req.pipe(proxyReq);
 });
 
 server.listen(PORT, () => console.log(`Proxy → ${BASE_URL} listening on :${PORT}`));
